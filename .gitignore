@@ -1,0 +1,22 @@
+# ===== .NET / C# 编译产物 =====
+bin/
+obj/
+*.user
+*.suo
+.vs/
+*.pdb
+
+# ===== 发布产物（体积大，不需要进仓库）=====
+发布版/
+_probe/
+
+# ===== 打包文件 =====
+*.zip
+*.7z
+*.rar
+
+# ===== 系统 / 编辑器 =====
+Thumbs.db
+Desktop.ini
+.DS_Store
+*.swp

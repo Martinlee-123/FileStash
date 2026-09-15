@@ -1,0 +1,276 @@
+<Window x:Class="FileStash.MainWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+        xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+        xmlns:local="clr-namespace:FileStash"
+        mc:Ignorable="d"
+        Title="文件暂存栈"
+        Width="320" Height="600"
+        WindowStyle="None"
+        AllowsTransparency="True"
+        Background="Transparent"
+        Topmost="True"
+        ShowActivated="False"
+        ShowInTaskbar="False"
+        ResizeMode="NoResize">
+    <Window.Resources>
+        <local:FileIconConverter x:Key="FileIcon"/>
+
+        <!-- 统一开关按钮样式：浅色底 · 深色字 · 圆角，未选中/选中两态 -->
+        <Style x:Key="ToggleChipStyle" TargetType="ToggleButton">
+            <Setter Property="FontSize" Value="12"/>
+            <Setter Property="Height" Value="26"/>
+            <Setter Property="Foreground" Value="#FF3A3A42"/>
+            <Setter Property="Background" Value="#F2FFFFFF"/>
+            <Setter Property="BorderBrush" Value="#66FFFFFF"/>
+            <Setter Property="BorderThickness" Value="1"/>
+            <Setter Property="Cursor" Value="Hand"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="ToggleButton">
+                        <Border x:Name="Bd"
+                                CornerRadius="6"
+                                Background="{TemplateBinding Background}"
+                                BorderBrush="{TemplateBinding BorderBrush}"
+                                BorderThickness="{TemplateBinding BorderThickness}">
+                            <ContentPresenter HorizontalAlignment="Center"
+                                              VerticalAlignment="Center"/>
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="Bd" Property="Background" Value="#FFFFFFFF"/>
+                            </Trigger>
+                            <Trigger Property="IsChecked" Value="True">
+                                <Setter Property="Foreground" Value="#FF1B6E3A"/>
+                                <Setter TargetName="Bd" Property="Background" Value="#FFB8ECC6"/>
+                                <Setter TargetName="Bd" Property="BorderBrush" Value="#FF4CA96B"/>
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <!-- 底部按钮样式：与开关同款外观（浅白玻璃底 · 深字 · 圆角） -->
+        <Style x:Key="ChipButtonStyle" TargetType="Button">
+            <Setter Property="FontSize" Value="12"/>
+            <Setter Property="Height" Value="26"/>
+            <Setter Property="Foreground" Value="#FF3A3A42"/>
+            <Setter Property="Background" Value="#F2FFFFFF"/>
+            <Setter Property="BorderBrush" Value="#66FFFFFF"/>
+            <Setter Property="BorderThickness" Value="1"/>
+            <Setter Property="Cursor" Value="Hand"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="Button">
+                        <Border x:Name="Bd"
+                                CornerRadius="6"
+                                Background="{TemplateBinding Background}"
+                                BorderBrush="{TemplateBinding BorderBrush}"
+                                BorderThickness="{TemplateBinding BorderThickness}">
+                            <ContentPresenter HorizontalAlignment="Center"
+                                              VerticalAlignment="Center"/>
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="Bd" Property="Background" Value="#FFFFFFFF"/>
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <!-- 底部按钮样式：浅灰玻璃 -->
+        <Style x:Key="GlassButtonStyle" TargetType="Button">
+            <Setter Property="FontSize" Value="12"/>
+            <Setter Property="Padding" Value="10,3"/>
+            <Setter Property="Foreground" Value="#FF2E2E36"/>
+            <Setter Property="Background" Value="#E8FFFFFF"/>
+            <Setter Property="BorderBrush" Value="#66FFFFFF"/>
+            <Setter Property="BorderThickness" Value="1"/>
+            <Setter Property="Cursor" Value="Hand"/>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="Button">
+                        <Border x:Name="Bd"
+                                CornerRadius="6"
+                                Background="{TemplateBinding Background}"
+                                BorderBrush="{TemplateBinding BorderBrush}"
+                                BorderThickness="{TemplateBinding BorderThickness}">
+                            <ContentPresenter HorizontalAlignment="Center"
+                                              VerticalAlignment="Center"/>
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="Bd" Property="Background" Value="#FFFFFFFF"/>
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+    </Window.Resources>
+    <Grid MouseLeave="RootGrid_MouseLeave">
+        <Grid.ColumnDefinitions>
+            <!-- 触发条（始终贴屏幕右边缘露出的窄条，放最左） -->
+            <ColumnDefinition Width="10"/>
+            <!-- 主面板（收起时在屏幕外，展开时显示） -->
+            <ColumnDefinition Width="*"/>
+        </Grid.ColumnDefinitions>
+
+        <!-- 触发条 -->
+        <Border Grid.Column="0"
+                Name="TriggerBar"
+                Background="#DCE8E8EC"
+                Cursor="Hand"
+                MouseEnter="TriggerBar_MouseEnter">
+            <TextBlock Name="TriggerArrow"
+                       Text="«"
+                       Foreground="#FF4A4A52"
+                       FontSize="10"
+                       FontWeight="Bold"
+                       HorizontalAlignment="Center"
+                       VerticalAlignment="Center"/>
+        </Border>
+
+        <!-- 主面板：浅灰半透明玻璃 -->
+        <Border Grid.Column="1"
+                Name="MainPanel"
+                Background="#E6DADAE0"
+                CornerRadius="0,12,12,0"
+                BorderBrush="#40FFFFFF"
+                BorderThickness="1,0,0,0"
+                AllowDrop="True"
+                DragEnter="MainPanel_DragEnter"
+                DragOver="MainPanel_DragOver"
+                Drop="MainPanel_Drop">
+            <Grid Margin="12,14,12,14">
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto"/>
+                    <RowDefinition Height="*"/>
+                    <RowDefinition Height="Auto"/>
+                </Grid.RowDefinitions>
+
+                <!-- 标题 + 固定开关 + 纯文字开关 -->
+                <Grid Grid.Row="0">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*"/>
+                        <ColumnDefinition Width="Auto"/>
+                        <ColumnDefinition Width="Auto"/>
+                    </Grid.ColumnDefinitions>
+                    <TextBlock Grid.Column="0"
+                               Text="文件暂存栈"
+                               Foreground="#FF1E1E24"
+                               FontSize="16"
+                               FontWeight="Bold"
+                               VerticalAlignment="Center"/>
+                    <ToggleButton Grid.Column="1"
+                                  Name="PinButton"
+                                  Content="固定"
+                                  ToolTip="固定面板：开启后鼠标离开也不自动收起"
+                                  Width="48"
+                                  Margin="0,0,6,0"
+                                  Style="{StaticResource ToggleChipStyle}"
+                                  Click="PinButton_Click"/>
+                    <ToggleButton Grid.Column="2"
+                                  Name="TextModeButton"
+                                  Content="纯文字"
+                                  ToolTip="纯文字模式：开启后拖出 txt 时直接以文字形式（适配 QQ/微信）"
+                                  Width="56"
+                                  Style="{StaticResource ToggleChipStyle}"
+                                  Click="TextModeButton_Click"/>
+                </Grid>
+
+                <!-- 文件列表 -->
+                <ListBox Grid.Row="1"
+                         Name="StashList"
+                         Margin="0,12,0,12"
+                         Background="Transparent"
+                         BorderThickness="0"
+                         ScrollViewer.HorizontalScrollBarVisibility="Disabled"
+                         ItemsSource="{Binding StashItems}"
+                         Foreground="#FF2A2A32"
+                         FontSize="13"
+                         SelectionMode="Multiple"
+                         AllowDrop="True"
+                         DragEnter="MainPanel_DragEnter"
+                         DragOver="MainPanel_DragOver"
+                         Drop="MainPanel_Drop"
+                         ContextMenuOpening="StashList_ContextMenuOpening">
+                    <ListBox.ItemContainerStyle>
+                        <Style TargetType="ListBoxItem">
+                            <!-- 拖拽事件直接绑到 ListBoxItem 上，避免 Multiple 模式下鼠标捕获导致 StashList 收不到 PreviewMouseMove -->
+                            <EventSetter Event="PreviewMouseLeftButtonDown" Handler="ListItem_PreviewMouseLeftButtonDown"/>
+                            <EventSetter Event="PreviewMouseMove" Handler="ListItem_PreviewMouseMove"/>
+                            <EventSetter Event="PreviewMouseLeftButtonUp" Handler="ListItem_PreviewMouseLeftButtonUp"/>
+                            <Style.Triggers>
+                                <Trigger Property="IsSelected" Value="True">
+                                    <Setter Property="Background" Value="#4080B0FF"/>
+                                    <Setter Property="Foreground" Value="#FF101418"/>
+                                </Trigger>
+                            </Style.Triggers>
+                        </Style>
+                    </ListBox.ItemContainerStyle>
+                    <ListBox.ItemTemplate>
+                        <DataTemplate>
+                            <StackPanel Orientation="Horizontal" Margin="0,2">
+                                <CheckBox IsChecked="{Binding IsSelected, RelativeSource={RelativeSource AncestorType=ListBoxItem}}"
+                                          IsHitTestVisible="False"
+                                          Focusable="False"
+                                          VerticalAlignment="Center"
+                                          Margin="0,0,6,0"/>
+                                <Image Source="{Binding Path, Converter={StaticResource FileIcon}}"
+                                       Width="16" Height="16"
+                                       Stretch="Uniform"
+                                       Margin="0,0,8,0"
+                                       VerticalAlignment="Center"/>
+                                <TextBlock Text="{Binding Name}"
+                                           VerticalAlignment="Center"/>
+                            </StackPanel>
+                        </DataTemplate>
+                    </ListBox.ItemTemplate>
+                    <ListBox.ContextMenu>
+                        <ContextMenu>
+                            <MenuItem Name="DeleteItemMenuItem" Header="删除此项" Click="DeleteItem_Click"/>
+                            <Separator/>
+                            <MenuItem Header="清空全部" Name="ClearAllMenuItem" Click="ClearAll_Click"/>
+                        </ContextMenu>
+                    </ListBox.ContextMenu>
+                </ListBox>
+
+                <!-- 底部提示 + 清空按钮 -->
+                <Grid Grid.Row="2">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*"/>
+                        <ColumnDefinition Width="Auto"/>
+                    </Grid.ColumnDefinitions>
+                    <TextBlock Grid.Column="0"
+                               Name="EmptyHint"
+                               Text="拖拽文件 / 文字 / 图片到这里暂存"
+                               Foreground="#99000000"
+                               FontSize="12"
+                               TextWrapping="Wrap"
+                               VerticalAlignment="Center"/>
+                    <StackPanel Grid.Column="1" Orientation="Horizontal">
+                        <Button Name="RestoreButton"
+                                Content="找回"
+                                Margin="0,0,6,0"
+                                Width="48"
+                                Style="{StaticResource ChipButtonStyle}"
+                                Click="Restore_Click"
+                                ToolTip="恢复最近一次清空的文件"
+                                Visibility="Collapsed"/>
+                        <Button Name="ClearButton"
+                                Content="清空"
+                                Width="48"
+                                Style="{StaticResource ChipButtonStyle}"
+                                Click="ClearAll_Click"
+                                Visibility="Collapsed"/>
+                    </StackPanel>
+                </Grid>
+            </Grid>
+        </Border>
+    </Grid>
+</Window>
