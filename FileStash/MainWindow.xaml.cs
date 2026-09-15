@@ -15,11 +15,11 @@ namespace FileStash;
 public partial class MainWindow : Window
 {
     // 收起时露出屏幕的触发条宽度
-    private const double TriggerBarWidth = 10;
+    private const double TriggerBarWidth = 8;
     // 浮窗完全展开时的宽度
-    private const double ExpandedWidth = 320;
-    // 拖动时鼠标距离屏幕右边缘多少像素内，触发面板弹出
-    private const double EdgeThreshold = 30;
+    private const double ExpandedWidth = 272;
+    // 拖动时鼠标距离屏幕边缘多少像素内，触发面板弹出（越小越不敏感）
+    private const double EdgeThreshold = 8;
 
     /// <summary>持久化文件路径：%AppData%\FileStash\stash.json</summary>
     private static readonly string StashFilePath = Path.Combine(
@@ -35,6 +35,14 @@ public partial class MainWindow : Window
     private static readonly string TempDir = Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
         "FileStash", "tmp");
+
+    /// <summary>设置文件路径：%AppData%\FileStash\settings.json（停靠边等偏好）</summary>
+    private static readonly string SettingsFilePath = Path.Combine(
+        Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
+        "FileStash", "settings.json");
+
+    /// <summary>面板停靠边：true=屏幕左侧，false=屏幕右侧（默认右侧）</summary>
+    private bool _dockLeft;
 
     private bool _isExpanded;
 
@@ -82,10 +90,12 @@ public partial class MainWindow : Window
         // 不抢焦点、不激活（置顶悬浮窗的关键）
         ShowActivated = false;
 
-        // 首次加载后定位到右边缘（收起态）
+        // 首次加载后定位到边缘（收起态）
         Loaded += (_, _) =>
         {
-            PositionToRightEdge();
+            LoadSettings();
+            ApplyEdgeUi();
+            PositionToEdge();
             SetCollapsed();
             LoadStash();
             CleanupOrphanTempFiles();
@@ -105,7 +115,7 @@ public partial class MainWindow : Window
         // 响应系统工作区变化（分辨率/任务栏位置改变）
         SystemEvents.DisplaySettingsChanged += (_, _) =>
         {
-            PositionToRightEdge();
+            PositionToEdge();
             if (!_isExpanded) SetCollapsed();
         };
 
@@ -134,11 +144,28 @@ public partial class MainWindow : Window
 
     #region 浮窗收放
 
-    private void PositionToRightEdge()
+    /// <summary>停靠边：右侧时窗口贴 wa.Right，左侧时贴 wa.Left。</summary>
+    private void PositionToEdge()
     {
         var wa = SystemParameters.WorkArea;
-        Left = wa.Right - TriggerBarWidth;
+        // 收起时只露出触发条宽度
+        Left = _dockLeft ? (wa.Left - (ExpandedWidth - TriggerBarWidth)) : wa.Right - TriggerBarWidth;
         Top = wa.Top + (wa.Height - Height) / 2; // 垂直居中
+    }
+
+    /// <summary>展开态的 Left 坐标（按停靠边计算）。</summary>
+    private double ExpandedLeft()
+    {
+        var wa = SystemParameters.WorkArea;
+        return _dockLeft ? wa.Left : wa.Right - ExpandedWidth;
+    }
+
+    /// <summary>收起态的 Left 坐标（按停靠边计算，只露出触发条）。</summary>
+    private double CollapsedLeft()
+    {
+        var wa = SystemParameters.WorkArea;
+        // 左侧模式：触发条在窗口最右列，需把主面板推出屏幕左边
+        return _dockLeft ? (wa.Left - (ExpandedWidth - TriggerBarWidth)) : wa.Right - TriggerBarWidth;
     }
 
     private void Expand()
@@ -146,11 +173,9 @@ public partial class MainWindow : Window
         if (_isExpanded) return;
         _isExpanded = true;
 
-        var wa = SystemParameters.WorkArea;
-        double targetLeft = wa.Right - ExpandedWidth;
-
-        AnimateLeft(targetLeft);
-        TriggerArrow.Text = "»";
+        AnimateLeft(ExpandedLeft());
+        // 展开后：箭头指向屏幕外（提示再点可收起）
+        TriggerArrow.Text = _dockLeft ? "«" : "»";
     }
 
     private void Collapse()
@@ -164,20 +189,17 @@ public partial class MainWindow : Window
         if ((DateTime.Now - _lastDropTime).TotalMilliseconds < 800) return;
 
         _isExpanded = false;
-
-        var wa = SystemParameters.WorkArea;
-        double targetLeft = wa.Right - TriggerBarWidth;
-
-        AnimateLeft(targetLeft);
-        TriggerArrow.Text = "«";
+        AnimateLeft(CollapsedLeft());
+        // 收起后：箭头指向屏幕中心（提示往内展开）
+        TriggerArrow.Text = _dockLeft ? "»" : "«";
     }
 
     private void SetCollapsed()
     {
         _isExpanded = false;
-        var wa = SystemParameters.WorkArea;
-        Left = wa.Right - TriggerBarWidth;
-        TriggerArrow.Text = "«";
+        Left = CollapsedLeft();
+        // 收起后：箭头指向屏幕中心（提示往内展开）
+        TriggerArrow.Text = _dockLeft ? "»" : "«";
     }
 
     private void AnimateLeft(double targetLeft)
@@ -216,6 +238,53 @@ public partial class MainWindow : Window
         }
     }
 
+    /// <summary>贴边开关：在屏幕左/右侧之间切换（并持久化）。</summary>
+    private void EdgeButton_Click(object sender, RoutedEventArgs e)
+    {
+        _dockLeft = !_dockLeft;
+        ApplyEdgeUi();
+        SaveSettings();
+
+        // 切边后强制展开，让用户直观看到面板到了新边
+        _isExpanded = false;
+        Expand();
+    }
+
+    /// <summary>根据停靠边刷新按钮文字、圆角方向、箭头朝向、列布局。</summary>
+    private void ApplyEdgeUi()
+    {
+        EdgeButton.Content = _dockLeft ? "左侧" : "右侧";
+
+        var cols = TriggerBar.Parent as Grid;
+        if (cols != null)
+        {
+            if (_dockLeft)
+            {
+                // 左侧：主面板在 col0（占满宽），触发条在 col1（8px，露屏幕左边缘）
+                cols.ColumnDefinitions[0].Width = new GridLength(1, GridUnitType.Star);
+                cols.ColumnDefinitions[1].Width = new GridLength(TriggerBarWidth);
+                Grid.SetColumn(MainPanel, 0);
+                Grid.SetColumn(TriggerBar, 1);
+                MainPanel.CornerRadius = new CornerRadius(0, 12, 12, 0);
+                MainPanel.BorderThickness = new Thickness(0, 0, 1, 0);
+            }
+            else
+            {
+                // 右侧：主面板在 col1（占满宽），触发条在 col0（8px，露屏幕右边缘）
+                cols.ColumnDefinitions[0].Width = new GridLength(TriggerBarWidth);
+                cols.ColumnDefinitions[1].Width = new GridLength(1, GridUnitType.Star);
+                Grid.SetColumn(MainPanel, 1);
+                Grid.SetColumn(TriggerBar, 0);
+                MainPanel.CornerRadius = new CornerRadius(12, 0, 0, 12);
+                MainPanel.BorderThickness = new Thickness(1, 0, 0, 0);
+            }
+        }
+
+        TriggerArrow.Text = _isExpanded
+            ? (_dockLeft ? "»" : "»")
+            : (_dockLeft ? "»" : "«");
+    }
+
     /// <summary>
     /// 鼠标离开整个浮窗（含触发条和主面板）时收回。
     /// 但拖出文件进行中不收回。
@@ -238,6 +307,51 @@ public partial class MainWindow : Window
     {
         _textMode = TextModeButton.IsChecked == true;
         TextModeButton.Content = _textMode ? "文字中" : "纯文字";
+    }
+
+    #endregion
+
+    #region 设置持久化
+
+    private sealed class AppSettings
+    {
+        public bool DockLeft { get; set; }
+    }
+
+    private void LoadSettings()
+    {
+        try
+        {
+            if (File.Exists(SettingsFilePath))
+            {
+                var json = File.ReadAllText(SettingsFilePath);
+                var s = JsonSerializer.Deserialize<AppSettings>(json);
+                if (s != null) _dockLeft = s.DockLeft;
+            }
+        }
+        catch { /* 读失败用默认（右侧） */ }
+    }
+
+    private void SaveSettings()
+    {
+        try
+        {
+            Directory.CreateDirectory(Path.GetDirectoryName(SettingsFilePath)!);
+            var json = JsonSerializer.Serialize(new AppSettings { DockLeft = _dockLeft },
+                new JsonSerializerOptions { WriteIndented = true });
+            File.WriteAllText(SettingsFilePath, json);
+        }
+        catch { /* 保存失败不阻断 */ }
+    }
+
+    /// <summary>切换停靠边（供托盘菜单调用）。</summary>
+    private void ToggleDockEdge()
+    {
+        _dockLeft = !_dockLeft;
+        ApplyEdgeUi();
+        SaveSettings();
+        if (_isExpanded) AnimateLeft(ExpandedLeft());
+        else SetCollapsed();
     }
 
     #endregion
@@ -312,7 +426,10 @@ public partial class MainWindow : Window
                 if (leftDown)
                 {
                     var wa = SystemParameters.WorkArea;
-                    if (info.pt.X >= wa.Right - EdgeThreshold)
+                    bool nearEdge = _dockLeft
+                        ? info.pt.X <= wa.Left + EdgeThreshold
+                        : info.pt.X >= wa.Right - EdgeThreshold;
+                    if (nearEdge)
                     {
                         Dispatcher.BeginInvoke(Expand);
                     }
@@ -846,7 +963,7 @@ public partial class MainWindow : Window
 
     private void InitTrayAndHotKey()
     {
-        _trayIcon = new TrayIcon(TogglePanel, ClearAllCore, RestoreCore, ExitApplication);
+        _trayIcon = new TrayIcon(TogglePanel, ClearAllCore, RestoreCore, ToggleDockEdge, ExitApplication);
         _hotKey = new HotKeyManager(this, TogglePanel);
     }
 
@@ -857,7 +974,7 @@ public partial class MainWindow : Window
         {
             _panelHidden = false;
             Show();
-            PositionToRightEdge();
+            PositionToEdge();
             SetCollapsed();
             InstallMouseHook();
         }

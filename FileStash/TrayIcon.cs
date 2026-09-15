@@ -14,10 +14,11 @@ public sealed class TrayIcon : IDisposable
     private readonly NotifyIcon _notifyIcon;
     private bool _disposed;
 
-    public TrayIcon(Action togglePanel, Action clearAll, Action restore, Action exit)
+    public TrayIcon(Action togglePanel, Action clearAll, Action restore, Action toggleEdge, Action exit)
     {
         var menu = new ContextMenuStrip();
         menu.Items.Add("显示/隐藏浮窗", null, (_, _) => togglePanel());
+        menu.Items.Add("切换停靠边（左/右）", null, (_, _) => toggleEdge());
         menu.Items.Add("清空全部", null, (_, _) => clearAll());
         menu.Items.Add("找回", null, (_, _) => restore());
         menu.Items.Add(new ToolStripSeparator());

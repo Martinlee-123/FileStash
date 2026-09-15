@@ -6,7 +6,7 @@
         xmlns:local="clr-namespace:FileStash"
         mc:Ignorable="d"
         Title="文件暂存栈"
-        Width="320" Height="600"
+        Width="272" Height="512"
         WindowStyle="None"
         AllowsTransparency="True"
         Background="Transparent"
@@ -19,8 +19,8 @@
 
         <!-- 统一开关按钮样式：浅色底 · 深色字 · 圆角，未选中/选中两态 -->
         <Style x:Key="ToggleChipStyle" TargetType="ToggleButton">
-            <Setter Property="FontSize" Value="12"/>
-            <Setter Property="Height" Value="26"/>
+            <Setter Property="FontSize" Value="11"/>
+            <Setter Property="Height" Value="24"/>
             <Setter Property="Foreground" Value="#FF3A3A42"/>
             <Setter Property="Background" Value="#F2FFFFFF"/>
             <Setter Property="BorderBrush" Value="#66FFFFFF"/>
@@ -54,8 +54,8 @@
 
         <!-- 底部按钮样式：与开关同款外观（浅白玻璃底 · 深字 · 圆角） -->
         <Style x:Key="ChipButtonStyle" TargetType="Button">
-            <Setter Property="FontSize" Value="12"/>
-            <Setter Property="Height" Value="26"/>
+            <Setter Property="FontSize" Value="11"/>
+            <Setter Property="Height" Value="24"/>
             <Setter Property="Foreground" Value="#FF3A3A42"/>
             <Setter Property="Background" Value="#F2FFFFFF"/>
             <Setter Property="BorderBrush" Value="#66FFFFFF"/>
@@ -114,8 +114,8 @@
     </Window.Resources>
     <Grid MouseLeave="RootGrid_MouseLeave">
         <Grid.ColumnDefinitions>
-            <!-- 触发条（始终贴屏幕右边缘露出的窄条，放最左） -->
-            <ColumnDefinition Width="10"/>
+            <!-- 触发条（始终贴屏幕边缘露出的窄条，收起时放最外侧列） -->
+            <ColumnDefinition Width="8"/>
             <!-- 主面板（收起时在屏幕外，展开时显示） -->
             <ColumnDefinition Width="*"/>
         </Grid.ColumnDefinitions>
@@ -146,53 +146,62 @@
                 DragEnter="MainPanel_DragEnter"
                 DragOver="MainPanel_DragOver"
                 Drop="MainPanel_Drop">
-            <Grid Margin="12,14,12,14">
+            <Grid Margin="10,12,10,12">
                 <Grid.RowDefinitions>
                     <RowDefinition Height="Auto"/>
                     <RowDefinition Height="*"/>
                     <RowDefinition Height="Auto"/>
                 </Grid.RowDefinitions>
 
-                <!-- 标题 + 固定开关 + 纯文字开关 -->
+                <!-- 标题 + 固定开关 + 纯文字开关 + 贴边设置 -->
                 <Grid Grid.Row="0">
                     <Grid.ColumnDefinitions>
                         <ColumnDefinition Width="*"/>
+                        <ColumnDefinition Width="Auto"/>
                         <ColumnDefinition Width="Auto"/>
                         <ColumnDefinition Width="Auto"/>
                     </Grid.ColumnDefinitions>
                     <TextBlock Grid.Column="0"
                                Text="文件暂存栈"
                                Foreground="#FF1E1E24"
-                               FontSize="16"
+                               FontSize="14"
                                FontWeight="Bold"
                                VerticalAlignment="Center"/>
                     <ToggleButton Grid.Column="1"
                                   Name="PinButton"
                                   Content="固定"
                                   ToolTip="固定面板：开启后鼠标离开也不自动收起"
-                                  Width="48"
-                                  Margin="0,0,6,0"
+                                  Width="42"
+                                  Margin="0,0,5,0"
                                   Style="{StaticResource ToggleChipStyle}"
                                   Click="PinButton_Click"/>
                     <ToggleButton Grid.Column="2"
                                   Name="TextModeButton"
                                   Content="纯文字"
                                   ToolTip="纯文字模式：开启后拖出 txt 时直接以文字形式（适配 QQ/微信）"
-                                  Width="56"
+                                  Width="50"
+                                  Margin="0,0,5,0"
                                   Style="{StaticResource ToggleChipStyle}"
                                   Click="TextModeButton_Click"/>
+                    <Button Grid.Column="3"
+                            Name="EdgeButton"
+                            Content="右侧"
+                            ToolTip="切换面板停靠位置：屏幕左侧 / 右侧"
+                            Width="44"
+                            Style="{StaticResource ChipButtonStyle}"
+                            Click="EdgeButton_Click"/>
                 </Grid>
 
                 <!-- 文件列表 -->
                 <ListBox Grid.Row="1"
                          Name="StashList"
-                         Margin="0,12,0,12"
+                         Margin="0,10,0,10"
                          Background="Transparent"
                          BorderThickness="0"
                          ScrollViewer.HorizontalScrollBarVisibility="Disabled"
                          ItemsSource="{Binding StashItems}"
                          Foreground="#FF2A2A32"
-                         FontSize="13"
+                         FontSize="12"
                          SelectionMode="Multiple"
                          AllowDrop="True"
                          DragEnter="MainPanel_DragEnter"
@@ -250,21 +259,21 @@
                                Name="EmptyHint"
                                Text="拖拽文件 / 文字 / 图片到这里暂存"
                                Foreground="#99000000"
-                               FontSize="12"
+                               FontSize="11"
                                TextWrapping="Wrap"
                                VerticalAlignment="Center"/>
                     <StackPanel Grid.Column="1" Orientation="Horizontal">
                         <Button Name="RestoreButton"
                                 Content="找回"
-                                Margin="0,0,6,0"
-                                Width="48"
+                                Margin="0,0,5,0"
+                                Width="42"
                                 Style="{StaticResource ChipButtonStyle}"
                                 Click="Restore_Click"
                                 ToolTip="恢复最近一次清空的文件"
                                 Visibility="Collapsed"/>
                         <Button Name="ClearButton"
                                 Content="清空"
-                                Width="48"
+                                Width="42"
                                 Style="{StaticResource ChipButtonStyle}"
                                 Click="ClearAll_Click"
                                 Visibility="Collapsed"/>
