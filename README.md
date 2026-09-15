@@ -85,17 +85,6 @@ FileStash/
 6. 多选：**单击切换选中**（松手生效）
 7. 全局快捷键：`Ctrl+Alt+S`
 
-## 🧭 竞品调研
-
-### Yoink（macOS）—— 本项目真正对标品
-Finder 拖文件时边缘弹出临时存放区，拖进去暂存，切窗口后再拖出。**功能与本项目几乎一致，但 macOS 专属** → Windows 空白点。
-
-### Ditto —— 剪贴板管理器
-管 `Ctrl+C/V` 的历史记录，**不是拖拽**，与拖拽暂存无关。
-
-### Winstep（Nexus/Xtreme）—— 桌面 Dock / 工具集
-仿 macOS Dock 停靠栏、启动器 + 美化，**与文件暂存无关**。
-
 ## ⚠️ 已知边界
 
 - **仅 Windows**（WPF / OLE / Win32 钩子为 Windows 专属 API）
