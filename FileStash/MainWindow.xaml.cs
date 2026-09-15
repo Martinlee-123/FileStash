@@ -456,13 +456,14 @@ public partial class MainWindow : Window
 
     #region 接收拖入文件/文字/图片
 
-    /// <summary>判断拖入的数据是否可暂存（文件、文字、图片位图）。</summary>
+    /// <summary>判断拖入的数据是否可暂存（文件、文字、图片位图、网页 HTML 片段）。</summary>
     private static bool IsStashable(System.Windows.IDataObject data)
     {
         return data.GetDataPresent(System.Windows.DataFormats.FileDrop)
             || data.GetDataPresent(System.Windows.DataFormats.UnicodeText)
             || data.GetDataPresent(System.Windows.DataFormats.Text)
-            || data.GetDataPresent(System.Windows.DataFormats.Bitmap);
+            || data.GetDataPresent(System.Windows.DataFormats.Bitmap)
+            || data.GetDataPresent(System.Windows.DataFormats.Html);
     }
 
     private void MainPanel_DragEnter(object sender, System.Windows.DragEventArgs e)
@@ -493,7 +494,16 @@ public partial class MainWindow : Window
             return;
         }
 
-        // 优先级：文件 > 文字 > 图片位图
+        // 优先级：文件 > 网页图片(mediaurl/缩略图反解) > HTML > 文字 > 图片位图
+        // 优先级：文件 > 网页图片(mediaurl/缩略图反解) > HTML > 文字 > 图片位图
+        // 关键：必应/百度图片结果页拖拽时，Text/UnicodeText 里的 mediaurl= 才是高清原图直链，
+        //       而 HTML 里 <img src> 是缩略图（如 bing 的 w=132&h=180），必须先取 mediaurl 原图。
+        string? draggedText = null;
+        if (e.Data.GetDataPresent(System.Windows.DataFormats.UnicodeText))
+            draggedText = e.Data.GetData(System.Windows.DataFormats.UnicodeText) as string;
+        else if (e.Data.GetDataPresent(System.Windows.DataFormats.Text))
+            draggedText = e.Data.GetData(System.Windows.DataFormats.Text) as string;
+
         if (e.Data.GetDataPresent(System.Windows.DataFormats.FileDrop))
         {
             if (e.Data.GetData(System.Windows.DataFormats.FileDrop) is string[] paths)
@@ -512,19 +522,218 @@ public partial class MainWindow : Window
                 }
             }
         }
-        else if (e.Data.GetDataPresent(System.Windows.DataFormats.UnicodeText))
+        else if (!string.IsNullOrWhiteSpace(draggedText) && TryExtractMediaUrl(draggedText, out var mediaUrl))
         {
-            AddTextToStash(e.Data.GetData(System.Windows.DataFormats.UnicodeText) as string);
+            // 图片搜索结果页拖拽：mediaurl= 是原图直链，优先下载高清原图
+            AddImageUrlToStash(mediaUrl!);
         }
-        else if (e.Data.GetDataPresent(System.Windows.DataFormats.Text))
+        else if (e.Data.GetDataPresent(System.Windows.DataFormats.Html))
         {
-            AddTextToStash(e.Data.GetData(System.Windows.DataFormats.Text) as string);
+            // 网页图片/富文本拖拽给 HTML 格式：从中提取 <img src> 图片链接下载
+            var html = e.Data.GetData(System.Windows.DataFormats.Html) as string;
+            AddHtmlToStash(html);
+        }
+        else if (!string.IsNullOrWhiteSpace(draggedText))
+        {
+            AddTextOrImageUrlToStash(draggedText);
         }
         else if (e.Data.GetDataPresent(System.Windows.DataFormats.Bitmap))
         {
             AddBitmapToStash(e.Data.GetData(System.Windows.DataFormats.Bitmap) as System.Windows.Media.Imaging.BitmapSource);
         }
         e.Handled = true;
+    }
+
+    /// <summary>
+    /// 从拖入文本中提取图片原图直链（mediaurl= 参数，常见于必应/百度图片搜索结果页的 detailV2 链接）。
+    /// 例如 "...&mediaurl=https%3a%2f%2fxxx.jpg&exph=5225&..." → 解码出原图地址。
+    /// </summary>
+    private static bool TryExtractMediaUrl(string text, out string? url)
+    {
+        url = null;
+        if (string.IsNullOrWhiteSpace(text)) return false;
+        var m = System.Text.RegularExpressions.Regex.Match(
+            text,
+            "mediaurl=([^&\\s]+)",
+            System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+        if (!m.Success) return false;
+        var raw = m.Groups[1].Value;
+        var decoded = Uri.UnescapeDataString(raw);
+        if (string.IsNullOrWhiteSpace(decoded)) return false;
+        // 基本校验是 http(s) 图片地址
+        if (!decoded.StartsWith("http://", StringComparison.OrdinalIgnoreCase)
+            && !decoded.StartsWith("https://", StringComparison.OrdinalIgnoreCase))
+            return false;
+        url = decoded;
+        return true;
+    }
+
+    /// <summary>判断文本是否为图片 URL（拖网页图片时浏览器可能只给图片链接文本）。</summary>
+    private static bool LooksLikeImageUrl(string text)
+    {
+        if (string.IsNullOrWhiteSpace(text)) return false;
+        var t = text.Trim();
+        // 仅接受 http/https 图片地址，避免普通带 .png 字样的文字被误判
+        if (!t.StartsWith("http://", StringComparison.OrdinalIgnoreCase)
+            && !t.StartsWith("https://", StringComparison.OrdinalIgnoreCase))
+            return false;
+        var ext = System.IO.Path.GetExtension(new Uri(t).AbsolutePath);
+        if (string.IsNullOrEmpty(ext)) return false;
+        ext = ext.TrimStart('.').ToLowerInvariant();
+        return ext == "png" || ext == "jpg" || ext == "jpeg" || ext == "gif"
+            || ext == "webp" || ext == "bmp" || ext == "ico" || ext == "svg";
+    }
+
+    /// <summary>拖入的文本：如果是图片 URL 则下载为图片，否则按文字暂存。</summary>
+    private void AddTextOrImageUrlToStash(string? text)
+    {
+        if (string.IsNullOrWhiteSpace(text)) return;
+        if (LooksLikeImageUrl(text))
+        {
+            AddImageUrlToStash(text.Trim());
+        }
+        else
+        {
+            AddTextToStash(text);
+        }
+    }
+
+    /// <summary>从网页 HTML 片段中提取 <img src> 图片链接并下载暂存；无图片则按文字暂存。</summary>
+    private void AddHtmlToStash(string? html)
+    {
+        if (string.IsNullOrWhiteSpace(html)) return;
+
+        // HTML 剪贴板格式带头部（如 "Version:0.9\r\n..."），从 <html> 起为有效内容；再往后统一正则找 img 标签
+        var imgSrc = ExtractFirstImgSrc(html);
+        if (imgSrc != null)
+        {
+            AddImageUrlToStash(imgSrc);
+        }
+        else
+        {
+            // 没有图片，退化为纯文字暂存
+            AddTextToStash(html);
+        }
+    }
+
+    /// <summary>从包含 HTML 片段的字符串里提取图片链接：优先取 srcset 里宽度最大的高清候选，否则用 <img src>。</summary>
+    private static string? ExtractFirstImgSrc(string content)
+    {
+        // 先取第一个 <img ...> 标签整体（含 src / srcset / data-src 等全部属性）
+        var imgTag = System.Text.RegularExpressions.Regex.Match(
+            content,
+            "<img[^>]*>",
+            System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+        if (!imgTag.Success) return null;
+        var tag = imgTag.Value;
+
+        // 1) srcset："url 480w, url2 1080w" 挑描述符最大的（最清晰）
+        var srcset = System.Text.RegularExpressions.Regex.Match(
+            tag,
+            "srcset\\s*=\\s*[\"']([^\"']+)",
+            System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+        string? best = null;
+        long bestW = -1;
+        if (srcset.Success)
+        {
+            foreach (var part in srcset.Groups[1].Value.Split(','))
+            {
+                var trimmed = part.Trim();
+                if (string.IsNullOrEmpty(trimmed)) continue;
+                var pieces = trimmed.Split(new[] { ' ' }, StringSplitOptions.RemoveEmptyEntries);
+                if (pieces.Length == 0 || string.IsNullOrWhiteSpace(pieces[0])) continue;
+                var url = pieces[0].Trim();
+                long w = 0;
+                if (pieces.Length >= 2)
+                {
+                    var desc = pieces[1].TrimEnd('w', 'W', 'x', 'X');
+                    long.TryParse(desc, out w);
+                }
+                if (string.IsNullOrWhiteSpace(url)) continue;
+                if (best == null || w > bestW) { best = url; bestW = w; }
+            }
+            if (best != null) return CleanSrc(best);
+        }
+
+        // 2) data-src / data-original（懒加载原图）优先于 src
+        var dataSrc = System.Text.RegularExpressions.Regex.Match(
+            tag,
+            "data-(?:original|src|full|actualsrc)\\s*=\\s*[\"']([^\"']+)",
+            System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+        if (dataSrc.Success && !string.IsNullOrWhiteSpace(dataSrc.Groups[1].Value))
+            return CleanSrc(dataSrc.Groups[1].Value);
+
+        // 3) 普通 src
+        var src = System.Text.RegularExpressions.Regex.Match(
+            tag,
+            "src\\s*=\\s*[\"']?([^\"'>\\s]+)",
+            System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+        if (src.Success && !string.IsNullOrWhiteSpace(src.Groups[1].Value))
+            return CleanSrc(src.Groups[1].Value);
+
+        return null;
+    }
+
+    private static string CleanSrc(string src)
+    {
+        var s = src.Replace("&quot;", "\"").Replace("&amp;", "&");
+        return s;
+    }
+
+    /// <summary>下载图片 URL 到临时 PNG 并加入暂存；本地 file:// 直接引用。</summary>
+    private void AddImageUrlToStash(string url)
+    {
+        if (string.IsNullOrWhiteSpace(url)) return;
+
+        try
+        {
+            Directory.CreateDirectory(TempDir);
+
+            // 本地文件路径：直接暂存真实文件
+            if (url.StartsWith("file://", StringComparison.OrdinalIgnoreCase))
+            {
+                var local = new Uri(url).LocalPath;
+                if (File.Exists(local))
+                {
+                    StashItems.Add(new StashItem
+                    {
+                        Path = local,
+                        Name = System.IO.Path.GetFileName(local)
+                    });
+                    return;
+                }
+            }
+
+            // http/https：下载到临时文件
+            if (!url.StartsWith("http://", StringComparison.OrdinalIgnoreCase)
+                && !url.StartsWith("https://", StringComparison.OrdinalIgnoreCase))
+                return;
+
+            var ext = System.IO.Path.GetExtension(new Uri(url).AbsolutePath);
+            if (string.IsNullOrEmpty(ext))
+                ext = ".png";
+            if (ext.Length > 5) ext = ext[..5]; // 避免奇怪的长扩展名
+            var file = Path.Combine(TempDir, $"网图_{DateTime.Now:HHmmss}_{Guid.NewGuid().ToString("N")[..4]}{ext}");
+
+            using var client = new System.Net.Http.HttpClient();
+            client.Timeout = TimeSpan.FromSeconds(15);
+            using var resp = client.GetAsync(url).Result;
+            if (!resp.IsSuccessStatusCode) return;
+            using var stream = resp.Content.ReadAsStreamAsync().Result;
+            using var fs = new FileStream(file, FileMode.Create);
+            stream.CopyTo(fs);
+
+            StashItems.Add(new StashItem
+            {
+                Path = file,
+                Name = System.IO.Path.GetFileName(file),
+                IsTemporary = true
+            });
+        }
+        catch
+        {
+            // 下载失败不阻断
+        }
     }
 
     /// <summary>把拖入的一段文字保存为临时 .txt 并加入暂存栈。</summary>
