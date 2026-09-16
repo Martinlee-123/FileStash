@@ -1,0 +1,86 @@
+<Window x:Class="FileStash.PreviewWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:local="clr-namespace:FileStash"
+        Title="预览"
+        Width="560" Height="480"
+        WindowStyle="None"
+        AllowsTransparency="True"
+        Background="Transparent"
+        Topmost="True"
+        ShowInTaskbar="False"
+        ResizeMode="NoResize"
+        ShowActivated="True"
+        PreviewKeyDown="Window_PreviewKeyDown"
+        MouseLeftButtonDown="Window_MouseLeftButtonDown">
+    <Border Background="#F21E1E24"
+            CornerRadius="12"
+            BorderBrush="#40FFFFFF"
+            BorderThickness="1">
+        <Grid Margin="14">
+            <Grid.RowDefinitions>
+                <RowDefinition Height="Auto"/>
+                <RowDefinition Height="*"/>
+                <RowDefinition Height="Auto"/>
+            </Grid.RowDefinitions>
+
+            <!-- 标题栏 -->
+            <Grid Grid.Row="0" Margin="0,0,0,10">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*"/>
+                    <ColumnDefinition Width="Auto"/>
+                </Grid.ColumnDefinitions>
+                <TextBlock Grid.Column="0"
+                           Name="TitleText"
+                           Text="预览"
+                           Foreground="#FFEDEDF2"
+                           FontSize="13"
+                           FontWeight="Bold"
+                           TextTrimming="CharacterEllipsis"
+                           VerticalAlignment="Center"/>
+                <TextBlock Grid.Column="1"
+                           Text="按 Esc / 空格 关闭"
+                           Foreground="#80EDEDF2"
+                           FontSize="10"
+                           VerticalAlignment="Center"/>
+            </Grid>
+
+            <!-- 预览内容：图片或大图标 + 信息 -->
+            <Grid Grid.Row="1">
+                <Image Name="PreviewImage"
+                       Stretch="Uniform"
+                       MaxWidth="520" MaxHeight="380"
+                       Visibility="Collapsed"/>
+                <StackPanel Name="PreviewIconPanel"
+                            HorizontalAlignment="Center"
+                            VerticalAlignment="Center"
+                            Visibility="Collapsed">
+                    <Image Name="PreviewIcon"
+                           Width="96" Height="96"
+                           Stretch="Uniform"
+                           Margin="0,0,0,14"/>
+                    <TextBlock Name="PreviewNameText"
+                               Foreground="#FFEDEDF2"
+                               FontSize="13"
+                               HorizontalAlignment="Center"
+                               TextWrapping="Wrap"
+                               MaxWidth="460"/>
+                    <TextBlock Name="PreviewMetaText"
+                               Foreground="#90EDEDF2"
+                               FontSize="11"
+                               Margin="0,6,0,0"
+                               HorizontalAlignment="Center"/>
+                </StackPanel>
+            </Grid>
+
+            <!-- 路径 -->
+            <TextBlock Grid.Row="2"
+                       Name="PathText"
+                       Foreground="#70EDEDF2"
+                       FontSize="10"
+                       Margin="0,10,0,0"
+                       TextTrimming="CharacterEllipsis"
+                       TextWrapping="NoWrap"/>
+        </Grid>
+    </Border>
+</Window>

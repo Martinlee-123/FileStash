@@ -13,7 +13,8 @@
         Topmost="True"
         ShowActivated="False"
         ShowInTaskbar="False"
-        ResizeMode="NoResize">
+        ResizeMode="NoResize"
+        PreviewKeyDown="MainWindow_PreviewKeyDown">
     <Window.Resources>
         <local:FileIconConverter x:Key="FileIcon"/>
 

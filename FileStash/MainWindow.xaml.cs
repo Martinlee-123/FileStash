@@ -18,8 +18,8 @@ public partial class MainWindow : Window
     private const double TriggerBarWidth = 8;
     // 浮窗完全展开时的宽度
     private const double ExpandedWidth = 272;
-    // 拖动时鼠标距离屏幕边缘多少像素内，触发面板弹出（越小越不敏感）
-    private const double EdgeThreshold = 8;
+    // 拖动时鼠标距离屏幕边缘多少像素内触发弹出（越小越不敏感）
+    private const double EdgeThreshold = 15;
 
     /// <summary>持久化文件路径：%AppData%\FileStash\stash.json</summary>
     private static readonly string StashFilePath = Path.Combine(
@@ -423,8 +423,10 @@ public partial class MainWindow : Window
             if (msg == WM_MOUSEMOVE)
             {
                 bool leftDown = (GetAsyncKeyState(VK_LBUTTON) & 0x8000) != 0;
-                if (leftDown)
+                if (leftDown && !_isExpanded)
                 {
+                    // 拖动时才弹：按住左键 + 靠近面板停靠侧边缘（阈值放宽到几十像素）
+                    // 选字时鼠标不会脱离文字区乱晃到屏幕边缘，故基本不会误触。
                     var wa = SystemParameters.WorkArea;
                     bool nearEdge = _dockLeft
                         ? info.pt.X <= wa.Left + EdgeThreshold
@@ -494,10 +496,9 @@ public partial class MainWindow : Window
             return;
         }
 
-        // 优先级：文件 > 网页图片(mediaurl/缩略图反解) > HTML > 文字 > 图片位图
-        // 优先级：文件 > 网页图片(mediaurl/缩略图反解) > HTML > 文字 > 图片位图
-        // 关键：必应/百度图片结果页拖拽时，Text/UnicodeText 里的 mediaurl= 才是高清原图直链，
-        //       而 HTML 里 <img src> 是缩略图（如 bing 的 w=132&h=180），必须先取 mediaurl 原图。
+        // 优先级：文件 > 图片原图(mediaurl) > 纯文字 > HTML(网页图片) > 图片位图
+        // 注意：纯文字必须排在 HTML 之前——拖普通文字时富文本网页同时给 UnicodeText 和 HTML 源码，
+        //       若先走 HTML 会把整个富文本源码当文字存错。图片结果页拖拽由 mediaurl 分支提前拦截。
         string? draggedText = null;
         if (e.Data.GetDataPresent(System.Windows.DataFormats.UnicodeText))
             draggedText = e.Data.GetData(System.Windows.DataFormats.UnicodeText) as string;
@@ -527,15 +528,16 @@ public partial class MainWindow : Window
             // 图片搜索结果页拖拽：mediaurl= 是原图直链，优先下载高清原图
             AddImageUrlToStash(mediaUrl!);
         }
-        else if (e.Data.GetDataPresent(System.Windows.DataFormats.Html))
-        {
-            // 网页图片/富文本拖拽给 HTML 格式：从中提取 <img src> 图片链接下载
-            var html = e.Data.GetData(System.Windows.DataFormats.Html) as string;
-            AddHtmlToStash(html);
-        }
         else if (!string.IsNullOrWhiteSpace(draggedText))
         {
+            // 纯文字（或纯图片 URL）拖入
             AddTextOrImageUrlToStash(draggedText);
+        }
+        else if (e.Data.GetDataPresent(System.Windows.DataFormats.Html))
+        {
+            // 网页图片拖拽给 HTML 格式：从中提取 <img src> 图片链接下载
+            var html = e.Data.GetData(System.Windows.DataFormats.Html) as string;
+            AddHtmlToStash(html);
         }
         else if (e.Data.GetDataPresent(System.Windows.DataFormats.Bitmap))
         {
@@ -987,6 +989,18 @@ public partial class MainWindow : Window
     private void ListItem_PreviewMouseLeftButtonDown(object sender, System.Windows.Input.MouseButtonEventArgs e)
     {
         var item = sender as ListBoxItem;
+
+        // 双击：打开文件（等同 Yoink 双击打开）
+        if (e.ClickCount == 2)
+        {
+            if (item?.DataContext is StashItem dbl)
+            {
+                OpenStashItem(dbl);
+            }
+            e.Handled = true;
+            return;
+        }
+
         _dragPivotItem = item?.DataContext as StashItem;
         _dragStartPoint = e.GetPosition(null);
         _dragSnapshot = StashList.SelectedItems.Cast<StashItem>().ToList();
@@ -996,6 +1010,70 @@ public partial class MainWindow : Window
         // 改为在 MouseUp（点击完成）时手动切换，避免按下/拖动瞬间选中状态抖动丢失。
         e.Handled = true;
         item?.CaptureMouse();
+    }
+
+    /// <summary>用系统默认程序打开暂存项（文件不存在则提示）。</summary>
+    private void OpenStashItem(StashItem item)
+    {
+        try
+        {
+            if (!File.Exists(item.Path))
+            {
+                System.Windows.MessageBox.Show($"文件不存在：\n{item.Path}", "文件暂存栈",
+                    MessageBoxButton.OK, MessageBoxImage.Warning);
+                return;
+            }
+            System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo
+            {
+                FileName = item.Path,
+                UseShellExecute = true
+            });
+        }
+        catch (Exception ex)
+        {
+            System.Windows.MessageBox.Show($"无法打开文件：\n{ex.Message}", "文件暂存栈",
+                MessageBoxButton.OK, MessageBoxImage.Warning);
+        }
+    }
+
+    /// <summary>全局预览窗单例，避免重复弹出。</summary>
+    private PreviewWindow? _previewWindow;
+
+    /// <summary>空格键 QuickLook 预览：对当前选中（或第一项）弹预览窗。</summary>
+    private void MainWindow_PreviewKeyDown(object sender, System.Windows.Input.KeyEventArgs e)
+    {
+        if (e.Key != System.Windows.Input.Key.Space) return;
+
+        // 已打开预览窗时，空格再次关闭（切换）
+        if (_previewWindow != null)
+        {
+            _previewWindow.Close();
+            _previewWindow = null;
+            e.Handled = true;
+            return;
+        }
+
+        // 取选中项；无选中取第一项
+        StashItem? target = StashList.SelectedItem as StashItem;
+        if (target == null && StashItems.Count > 0)
+            target = StashItems[0];
+        if (target == null) return;
+
+        ShowPreview(target);
+        e.Handled = true;
+    }
+
+    /// <summary>弹出预览窗（单例）。</summary>
+    private void ShowPreview(StashItem item)
+    {
+        try
+        {
+            _previewWindow?.Close();
+            _previewWindow = new PreviewWindow(item);
+            _previewWindow.Closed += (_, _) => _previewWindow = null;
+            _previewWindow.Show();
+        }
+        catch { /* 预览失败不阻断 */ }
     }
 
     private void ListItem_PreviewMouseMove(object sender, System.Windows.Input.MouseEventArgs e)
