@@ -47,6 +47,9 @@ public partial class PreviewWindow : Window
                 bmp.UriSource = new Uri(item.Path);
                 bmp.CacheOption = BitmapCacheOption.OnLoad;
                 bmp.CreateOptions = BitmapCreateOptions.IgnoreImageCache;
+                // ⚠️ 限制解码尺寸：用户常拖入巨幅截图/照片，按原分辨率解码会占用大量内存、
+                //    在 UI 线程上卡住界面（大图甚至几秒）。按预览窗尺寸上限节流解码。
+                bmp.DecodePixelWidth = 1040; // 预览窗 MaxWidth 520 的 2 倍，兼顾清晰度与内存
                 bmp.EndInit();
                 bmp.Freeze();
 
@@ -54,8 +57,20 @@ public partial class PreviewWindow : Window
                 PreviewImage.Visibility = Visibility.Visible;
                 shownImage = true;
 
+                // 元信息用原始尺寸（只读图片头，不解码整图，开销很低），而不是上面节流后的解码尺寸
                 var fi = new FileInfo(item.Path);
-                PreviewMetaText.Text = $"{bmp.PixelWidth} × {bmp.PixelHeight} px · {FormatSize(fi.Length)}";
+                int origW = bmp.PixelWidth, origH = bmp.PixelHeight;
+                try
+                {
+                    var header = System.Windows.Media.Imaging.BitmapFrame.Create(
+                        new Uri(item.Path),
+                        System.Windows.Media.Imaging.BitmapCreateOptions.DelayCreation,
+                        System.Windows.Media.Imaging.BitmapCacheOption.None);
+                    origW = header.PixelWidth;
+                    origH = header.PixelHeight;
+                }
+                catch { /* 读不到就用解码尺寸 */ }
+                PreviewMetaText.Text = $"{origW} × {origH} px · {FormatSize(fi.Length)}";
             }
             catch
             {

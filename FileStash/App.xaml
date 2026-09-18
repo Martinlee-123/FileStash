@@ -1,9 +1,10 @@
-﻿<Application x:Class="FileStash.App"
+<Application x:Class="FileStash.App"
              xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-             xmlns:local="clr-namespace:FileStash"
-             StartupUri="MainWindow.xaml">
+             xmlns:local="clr-namespace:FileStash">
+    <!-- 注意：不在此处设 StartupUri。改由 App.OnStartup 在完成单实例检查后手动创建主窗口，
+         避免第二个实例启动时闪出一个任务栏图标。 -->
     <Application.Resources>
-         
+
     </Application.Resources>
 </Application>

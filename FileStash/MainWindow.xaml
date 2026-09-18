@@ -113,7 +113,12 @@
             </Setter>
         </Style>
     </Window.Resources>
-    <Grid MouseLeave="RootGrid_MouseLeave">
+    <Grid x:Name="RootGrid" MouseLeave="RootGrid_MouseLeave">
+        <!-- 滑入滑出改用 RenderTransform（GPU 合成、同步显示器刷新），
+             不再动 Window.Left（每帧 SetWindowPos 在透明分层窗上开销大，高刷屏上帧率明显偏低） -->
+        <Grid.RenderTransform>
+            <TranslateTransform x:Name="SlideTransform"/>
+        </Grid.RenderTransform>
         <Grid.ColumnDefinitions>
             <!-- 触发条（始终贴屏幕边缘露出的窄条，收起时放最外侧列） -->
             <ColumnDefinition Width="8"/>

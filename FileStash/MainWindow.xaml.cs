@@ -77,8 +77,40 @@ public partial class MainWindow : Window
     // 拖入完成时间戳：拖入后的短时间内不自动收回（等 Drop 处理完）
     private DateTime _lastDropTime = DateTime.MinValue;
 
+    // 鼠标钩子里展开请求的节流时间戳：钩子回调十分频繁，避免疯狂 post 到 UI 线程
+    private DateTime _lastHookExpand = DateTime.MinValue;
+
     /// <summary>暂存的文件列表（绑定到 ListBox）</summary>
     public ObservableCollection<StashItem> StashItems { get; } = new();
+
+    /// <summary>共享 HttpClient（避免每次拖入网图都新建实例，导致连接池/socket 耗尽）。</summary>
+    private static readonly System.Net.Http.HttpClient Http = new()
+    {
+        Timeout = TimeSpan.FromSeconds(15)
+    };
+
+    // ── DPI / 工作区缓存：全局鼠标钩子回调频率极高（每秒数百次），
+    //    绝不能在里面做视觉树遍历（PresentationSource.FromVisual）或反复读 SystemParameters。
+    //    这里缓存「物理像素 → DIP」的比例与工作区矩形，仅在 DPI/分辨率变化时刷新。
+    private double _deviceToDipScale = 1.0;   // 物理像素 × 此值 = DIP
+    private System.Windows.Rect _workAreaDip = System.Windows.Rect.Empty;
+
+    /// <summary>刷新 DPI 与工作区缓存（仅 UI 线程调用，频率低，开销可接受）。</summary>
+    private void RefreshDipCaches()
+    {
+        try
+        {
+            var src = System.Windows.PresentationSource.FromVisual(this);
+            if (src?.CompositionTarget != null)
+            {
+                var toDevice = src.CompositionTarget.TransformToDevice; // DIP → 物理
+                if (toDevice.M11 > 0)
+                    _deviceToDipScale = 1.0 / toDevice.M11; // 物理 → DIP
+            }
+        }
+        catch { /* 取不到就用当前值 */ }
+        _workAreaDip = SystemParameters.WorkArea;
+    }
 
     public MainWindow()
     {
@@ -93,14 +125,24 @@ public partial class MainWindow : Window
         // 首次加载后定位到边缘（收起态）
         Loaded += (_, _) =>
         {
-            LoadSettings();
-            ApplyEdgeUi();
-            PositionToEdge();
-            SetCollapsed();
-            LoadStash();
-            CleanupOrphanTempFiles();
-            InstallMouseHook();
-            InitTrayAndHotKey();
+            // 启动初始化任何一步失败都不应让程序崩溃（未处理异常会直接终止进程）
+            try
+            {
+                LoadSettings();
+                ApplyEdgeUi();
+                RefreshDipCaches();   // 必须在装钩子前刷新（钩子要用缓存的工作区/DIP 比例）
+                PositionToEdge();
+                SetCollapsed();
+                LoadStash();
+                // 启动清理 tmp 目录可能扫描大量文件，放后台，别阻塞启动
+                Task.Run(CleanupOrphanTempFiles);
+                InstallMouseHook();
+                InitTrayAndHotKey();
+            }
+            catch (Exception ex)
+            {
+                App.LogException("Loaded", ex);
+            }
         };
 
         // 关闭时保存并卸载钩子
@@ -113,43 +155,70 @@ public partial class MainWindow : Window
         };
 
         // 响应系统工作区变化（分辨率/任务栏位置改变）
-        SystemEvents.DisplaySettingsChanged += (_, _) =>
+        // ⚠️ SystemEvents 的回调发生在它自己的线程上，直接改 Window 属性会跨线程抛异常；
+        //    必须 Dispatcher 回到 UI 线程。
+        SystemEvents.DisplaySettingsChanged += (_, _) => Dispatcher.BeginInvoke(() =>
         {
+            RefreshDipCaches();
             PositionToEdge();
             if (!_isExpanded) SetCollapsed();
-        };
+        });
 
         // 右键菜单关闭后，若鼠标已离开面板，则收回
-        StashList.ContextMenu!.Closed += (_, _) =>
+        // （ContextMenu 在设计器里已声明，但加空值保护以防 XAML 变更后 NRE）
+        if (StashList.ContextMenu != null)
         {
-            var pos = System.Windows.Input.Mouse.GetPosition(this);
-            if (pos.X < 0 || pos.Y < 0 || pos.X > ActualWidth || pos.Y > ActualHeight)
+            StashList.ContextMenu.Closed += (_, _) =>
             {
-                Collapse();
-            }
-        };
+                var pos = System.Windows.Input.Mouse.GetPosition(this);
+                if (pos.X < 0 || pos.Y < 0 || pos.X > ActualWidth || pos.Y > ActualHeight)
+                {
+                    Collapse();
+                }
+            };
+        }
 
         // 列表变化时：更新空提示 + 持久化；一旦有文件就强制展开（状态驱动，避免时序竞态）
         StashItems.CollectionChanged += (_, _) =>
         {
             UpdateEmptyHint();
-            SaveStash();
+            // 延迟合并保存：一次性拖入很多文件时避免每个 item 都写一次磁盘
+            ScheduleSaveStash();
 
             if (StashItems.Count > 0)
             {
-                Dispatcher.BeginInvoke(() => Expand());
+                Dispatcher.BeginInvoke(new Action(Expand));
             }
         };
+
+        // 退出时确保最后一次修改落盘
+        Closed += (_, _) => FlushPendingSave();
     }
 
     #region 浮窗收放
 
-    /// <summary>停靠边：右侧时窗口贴 wa.Right，左侧时贴 wa.Left。</summary>
+    /// <summary>跨显示器移动导致 DPI 变化：刷新缓存并重新贴边（高 DPI 多屏场景必做）。</summary>
+    protected override void OnDpiChanged(System.Windows.DpiScale oldDpi, System.Windows.DpiScale newDpi)
+    {
+        base.OnDpiChanged(oldDpi, newDpi);
+        try
+        {
+            RefreshDipCaches();
+            PositionToEdge();
+            if (!_isExpanded) SetCollapsed();
+        }
+        catch { /* 忽略 */ }
+    }
+
+    /// <summary>
+    /// 窗口始终停在「展开」位置，靠根 Grid 的 TranslateTransform 平移来表现收/展。
+    /// 好处：窗口不移动 → 不触发 SetWindowPos，动画在渲染线程合成，高刷新率屏幕也流畅。
+    /// 收起后 80% 区域为全透明（alpha=0），按 Windows 分层窗规则自动点击穿透，不会挡住桌面。
+    /// </summary>
     private void PositionToEdge()
     {
         var wa = SystemParameters.WorkArea;
-        // 收起时只露出触发条宽度
-        Left = _dockLeft ? (wa.Left - (ExpandedWidth - TriggerBarWidth)) : wa.Right - TriggerBarWidth;
+        Left = ExpandedLeft();
         Top = wa.Top + (wa.Height - Height) / 2; // 垂直居中
     }
 
@@ -160,20 +229,16 @@ public partial class MainWindow : Window
         return _dockLeft ? wa.Left : wa.Right - ExpandedWidth;
     }
 
-    /// <summary>收起态的 Left 坐标（按停靠边计算，只露出触发条）。</summary>
-    private double CollapsedLeft()
-    {
-        var wa = SystemParameters.WorkArea;
-        // 左侧模式：触发条在窗口最右列，需把主面板推出屏幕左边
-        return _dockLeft ? (wa.Left - (ExpandedWidth - TriggerBarWidth)) : wa.Right - TriggerBarWidth;
-    }
+    /// <summary>收起时内容需平移的像素（右停靠向右推、左停靠向左推），只露出触发条。</summary>
+    private double CollapsedOffset()
+        => _dockLeft ? -(ExpandedWidth - TriggerBarWidth) : (ExpandedWidth - TriggerBarWidth);
 
     private void Expand()
     {
         if (_isExpanded) return;
         _isExpanded = true;
 
-        AnimateLeft(ExpandedLeft());
+        AnimateSlide(0);
         // 展开后：箭头指向屏幕外（提示再点可收起）
         TriggerArrow.Text = _dockLeft ? "«" : "»";
     }
@@ -189,7 +254,7 @@ public partial class MainWindow : Window
         if ((DateTime.Now - _lastDropTime).TotalMilliseconds < 800) return;
 
         _isExpanded = false;
-        AnimateLeft(CollapsedLeft());
+        AnimateSlide(CollapsedOffset());
         // 收起后：箭头指向屏幕中心（提示往内展开）
         TriggerArrow.Text = _dockLeft ? "»" : "«";
     }
@@ -197,19 +262,34 @@ public partial class MainWindow : Window
     private void SetCollapsed()
     {
         _isExpanded = false;
-        Left = CollapsedLeft();
+        // 直接跳到收起态（无动画）
+        SlideTransform.BeginAnimation(System.Windows.Media.TranslateTransform.XProperty, null);
+        SlideTransform.X = CollapsedOffset();
         // 收起后：箭头指向屏幕中心（提示往内展开）
         TriggerArrow.Text = _dockLeft ? "»" : "«";
     }
 
-    private void AnimateLeft(double targetLeft)
+    /// <summary>
+    /// 平移根 Grid 做收/展动画。
+    /// ⚠️ 关键：用 RenderTransform 而非 Window.Left——后者每帧 SetWindowPos（UI 线程重操作，
+    ///    透明分层窗上特别贵，且窗口移动不与显示器刷新同步）；前者由渲染线程合成，
+    ///    在硬件加速（Tier 2）下自然跟随显示器刷新率（60/120/144/240Hz 都顺着走）。
+    ///    因此这里用标准 DoubleAnimation 即可，无需 DesiredFrameRate（默认 0 = 不设上限），
+    ///    也不用手动逐帧驱动。
+    /// </summary>
+    private void AnimateSlide(double targetOffset)
     {
-        var anim = new DoubleAnimation(Left, targetLeft, TimeSpan.FromMilliseconds(180))
+        var anim = new DoubleAnimation(SlideTransform.X, targetOffset, TimeSpan.FromMilliseconds(180))
         {
-            EasingFunction = new CubicEase { EasingMode = EasingMode.EaseOut }
+            EasingFunction = new CubicEase { EasingMode = EasingMode.EaseOut },
+            FillBehavior = FillBehavior.Stop   // 结束后回到底层值，避免累积
         };
-        anim.Completed += (_, _) => Left = targetLeft;
-        BeginAnimation(Window.LeftProperty, anim);
+        anim.Completed += (_, _) =>
+        {
+            SlideTransform.BeginAnimation(System.Windows.Media.TranslateTransform.XProperty, null);
+            SlideTransform.X = targetOffset;
+        };
+        SlideTransform.BeginAnimation(System.Windows.Media.TranslateTransform.XProperty, anim);
     }
 
     private void TriggerBar_MouseEnter(object sender, System.Windows.Input.MouseEventArgs e)
@@ -244,6 +324,9 @@ public partial class MainWindow : Window
         _dockLeft = !_dockLeft;
         ApplyEdgeUi();
         SaveSettings();
+
+        // 换边后必须重新贴边定位（窗口本体固定在贴边位置，换边要移到另一侧）
+        PositionToEdge();
 
         // 切边后强制展开，让用户直观看到面板到了新边
         _isExpanded = false;
@@ -281,7 +364,7 @@ public partial class MainWindow : Window
         }
 
         TriggerArrow.Text = _isExpanded
-            ? (_dockLeft ? "»" : "»")
+            ? (_dockLeft ? "«" : "»")
             : (_dockLeft ? "»" : "«");
     }
 
@@ -350,7 +433,9 @@ public partial class MainWindow : Window
         _dockLeft = !_dockLeft;
         ApplyEdgeUi();
         SaveSettings();
-        if (_isExpanded) AnimateLeft(ExpandedLeft());
+        // 切换后重新贴边定位（窗口位置变了），再恢复当前的展开/收起状态
+        PositionToEdge();
+        if (_isExpanded) AnimateSlide(0);
         else SetCollapsed();
     }
 
@@ -413,43 +498,72 @@ public partial class MainWindow : Window
         }
     }
 
+    /// <summary>
+    /// 把鼠标钩子返回的「物理像素」坐标转成 WPF 的 DIP（逻辑像素）坐标。
+    /// ⚠️ 关键坑：WH_MOUSE_LL 钩子的 pt 是物理像素（受系统缩放影响，如 200% 时为 3120），
+    ///    而 SystemParameters.WorkArea / Window.Left 都是 DIP（1560）。
+    ///    若不转换，在高 DPI 机器上“靠近边缘”的判定区域会被放大到半个屏幕。
+    ///    这里用缓存的缩放比做纯算术换算，不做视觉树遍历（回调频率极高）。
+    /// </summary>
+    private System.Windows.Point DeviceToDip(System.Windows.Point devicePt)
+    {
+        return new System.Windows.Point(devicePt.X * _deviceToDipScale, devicePt.Y * _deviceToDipScale);
+    }
+
     private IntPtr HookCallback(int nCode, IntPtr wParam, IntPtr lParam)
     {
-        if (nCode >= 0)
+        try
         {
-            int msg = wParam.ToInt32();
-            var info = Marshal.PtrToStructure<MSLLHOOKSTRUCT>(lParam);
-
-            if (msg == WM_MOUSEMOVE)
+            if (nCode >= 0)
             {
-                bool leftDown = (GetAsyncKeyState(VK_LBUTTON) & 0x8000) != 0;
-                if (leftDown && !_isExpanded)
+                int msg = wParam.ToInt32();
+                var info = Marshal.PtrToStructure<MSLLHOOKSTRUCT>(lParam);
+
+                if (msg == WM_MOUSEMOVE)
                 {
-                    // 拖动时才弹：按住左键 + 靠近面板停靠侧边缘（阈值放宽到几十像素）
-                    // 选字时鼠标不会脱离文字区乱晃到屏幕边缘，故基本不会误触。
-                    var wa = SystemParameters.WorkArea;
-                    bool nearEdge = _dockLeft
-                        ? info.pt.X <= wa.Left + EdgeThreshold
-                        : info.pt.X >= wa.Right - EdgeThreshold;
-                    if (nearEdge)
+                    bool leftDown = (GetAsyncKeyState(VK_LBUTTON) & 0x8000) != 0;
+                    if (leftDown && !_isExpanded)
                     {
-                        Dispatcher.BeginInvoke(Expand);
+                        // 节流：钩子每秒触发数百次，避免疯狂 post 到 UI 线程淹没消息队列
+                        if ((DateTime.Now - _lastHookExpand).TotalMilliseconds >= 120)
+                        {
+                            // 钩子坐标是物理像素，乘缓存比例转 DIP 后再与工作区比较
+                            double dipX = info.pt.X * _deviceToDipScale;
+                            bool nearEdge = _dockLeft
+                                ? dipX <= _workAreaDip.Left + EdgeThreshold
+                                : dipX >= _workAreaDip.Right - EdgeThreshold;
+                            if (nearEdge)
+                            {
+                                _lastHookExpand = DateTime.Now;
+                                Dispatcher.BeginInvoke(
+                                    System.Windows.Threading.DispatcherPriority.Normal,
+                                    new Action(Expand));
+                            }
+                        }
                     }
                 }
-            }
-            else if (msg == WM_LBUTTONUP)
-            {
-                // 松开左键时，若鼠标不在窗口内，收回面板
-                Dispatcher.BeginInvoke(() =>
+                else if (msg == WM_LBUTTONUP)
                 {
-                    var rect = new Rect(Left, Top, ActualWidth, ActualHeight);
-                    var pos = new System.Windows.Point(info.pt.X, info.pt.Y);
-                    if (!rect.Contains(pos))
-                    {
-                        Collapse();
-                    }
-                });
+                    // 松开左键时，若鼠标不在窗口内，收回面板（同样用 DIP 坐标比较）
+                    double dipX = info.pt.X * _deviceToDipScale;
+                    double dipY = info.pt.Y * _deviceToDipScale;
+                    Dispatcher.BeginInvoke(
+                        System.Windows.Threading.DispatcherPriority.Normal,
+                        new Action(() =>
+                        {
+                            if (!IsLoaded) return;
+                            var rect = new Rect(Left, Top, ActualWidth, ActualHeight);
+                            if (!rect.Contains(dipX, dipY))
+                            {
+                                Collapse();
+                            }
+                        }));
+                }
             }
+        }
+        catch
+        {
+            // 钩子回调里任何异常都必须吞掉，否则会影响全局鼠标输入
         }
         return CallNextHookEx(_hookId, nCode, wParam, lParam);
     }
@@ -486,16 +600,30 @@ public partial class MainWindow : Window
 
     private void MainPanel_Drop(object sender, System.Windows.DragEventArgs e)
     {
+        e.Handled = true;
+
         // 记录拖入时间：之后短时间内不自动收回，确保拖入后面板保持展开
         _lastDropTime = DateTime.Now;
 
         // 防止把「从本面板拖出」的数据再次丢回面板（会导致复制出相同文件）
         if (_dragOutSuppressCollapse)
         {
-            e.Handled = true;
             return;
         }
 
+        try
+        {
+            HandleDrop(e);
+        }
+        catch (Exception ex)
+        {
+            // 个别来源的剪贴板数据格式异常（如非法 URI）不应让整个程序崩溃
+            App.LogException("MainPanel_Drop", ex);
+        }
+    }
+
+    private void HandleDrop(System.Windows.DragEventArgs e)
+    {
         // 优先级：文件 > 图片原图(mediaurl) > 纯文字 > HTML(网页图片) > 图片位图
         // 注意：纯文字必须排在 HTML 之前——拖普通文字时富文本网页同时给 UnicodeText 和 HTML 源码，
         //       若先走 HTML 会把整个富文本源码当文字存错。图片结果页拖拽由 mediaurl 分支提前拦截。
@@ -543,7 +671,6 @@ public partial class MainWindow : Window
         {
             AddBitmapToStash(e.Data.GetData(System.Windows.DataFormats.Bitmap) as System.Windows.Media.Imaging.BitmapSource);
         }
-        e.Handled = true;
     }
 
     /// <summary>
@@ -560,7 +687,9 @@ public partial class MainWindow : Window
             System.Text.RegularExpressions.RegexOptions.IgnoreCase);
         if (!m.Success) return false;
         var raw = m.Groups[1].Value;
-        var decoded = Uri.UnescapeDataString(raw);
+        string decoded;
+        try { decoded = Uri.UnescapeDataString(raw); }
+        catch { return false; }
         if (string.IsNullOrWhiteSpace(decoded)) return false;
         // 基本校验是 http(s) 图片地址
         if (!decoded.StartsWith("http://", StringComparison.OrdinalIgnoreCase)
@@ -579,11 +708,19 @@ public partial class MainWindow : Window
         if (!t.StartsWith("http://", StringComparison.OrdinalIgnoreCase)
             && !t.StartsWith("https://", StringComparison.OrdinalIgnoreCase))
             return false;
-        var ext = System.IO.Path.GetExtension(new Uri(t).AbsolutePath);
-        if (string.IsNullOrEmpty(ext)) return false;
-        ext = ext.TrimStart('.').ToLowerInvariant();
-        return ext == "png" || ext == "jpg" || ext == "jpeg" || ext == "gif"
-            || ext == "webp" || ext == "bmp" || ext == "ico" || ext == "svg";
+        try
+        {
+            var ext = System.IO.Path.GetExtension(new Uri(t).AbsolutePath);
+            if (string.IsNullOrEmpty(ext)) return false;
+            ext = ext.TrimStart('.').ToLowerInvariant();
+            return ext == "png" || ext == "jpg" || ext == "jpeg" || ext == "gif"
+                || ext == "webp" || ext == "bmp" || ext == "ico" || ext == "svg";
+        }
+        catch
+        {
+            // 非法 URL（含空格/特殊字符）不应抛异常
+            return false;
+        }
     }
 
     /// <summary>拖入的文本：如果是图片 URL 则下载为图片，否则按文字暂存。</summary>
@@ -682,8 +819,12 @@ public partial class MainWindow : Window
         return s;
     }
 
-    /// <summary>下载图片 URL 到临时 PNG 并加入暂存；本地 file:// 直接引用。</summary>
-    private void AddImageUrlToStash(string url)
+    /// <summary>
+    /// 下载图片 URL 到临时文件并加入暂存；本地 file:// 直接引用。
+    /// ⚠️ 网络下载必须放到后台线程（await Task.Run），否则会在 UI 线程上同步等待网络，
+    ///    超时 15 秒内整个窗口冻结 → 被 Windows 判定「未响应」（本会话确认的卡死主因）。
+    /// </summary>
+    private async void AddImageUrlToStash(string url)
     {
         if (string.IsNullOrWhiteSpace(url)) return;
 
@@ -694,7 +835,9 @@ public partial class MainWindow : Window
             // 本地文件路径：直接暂存真实文件
             if (url.StartsWith("file://", StringComparison.OrdinalIgnoreCase))
             {
-                var local = new Uri(url).LocalPath;
+                string local;
+                try { local = new Uri(url).LocalPath; }
+                catch { return; }
                 if (File.Exists(local))
                 {
                     StashItems.Add(new StashItem
@@ -702,8 +845,8 @@ public partial class MainWindow : Window
                         Path = local,
                         Name = System.IO.Path.GetFileName(local)
                     });
-                    return;
                 }
+                return;
             }
 
             // http/https：下载到临时文件
@@ -711,19 +854,34 @@ public partial class MainWindow : Window
                 && !url.StartsWith("https://", StringComparison.OrdinalIgnoreCase))
                 return;
 
-            var ext = System.IO.Path.GetExtension(new Uri(url).AbsolutePath);
-            if (string.IsNullOrEmpty(ext))
-                ext = ".png";
+            var ext = ".png";
+            try
+            {
+                var e2 = System.IO.Path.GetExtension(new Uri(url).AbsolutePath);
+                if (!string.IsNullOrEmpty(e2)) ext = e2;
+            }
+            catch { /* 解析失败就用默认 .png */ }
             if (ext.Length > 5) ext = ext[..5]; // 避免奇怪的长扩展名
             var file = Path.Combine(TempDir, $"网图_{DateTime.Now:HHmmss}_{Guid.NewGuid().ToString("N")[..4]}{ext}");
 
-            using var client = new System.Net.Http.HttpClient();
-            client.Timeout = TimeSpan.FromSeconds(15);
-            using var resp = client.GetAsync(url).Result;
-            if (!resp.IsSuccessStatusCode) return;
-            using var stream = resp.Content.ReadAsStreamAsync().Result;
-            using var fs = new FileStream(file, FileMode.Create);
-            stream.CopyTo(fs);
+            // 后台线程下载，绝不阻塞 UI 线程
+            var bytes = await Task.Run(async () =>
+            {
+                try
+                {
+                    using var resp = await Http.GetAsync(url);
+                    if (!resp.IsSuccessStatusCode) return null;
+                    return await resp.Content.ReadAsByteArrayAsync();
+                }
+                catch
+                {
+                    return null; // 网络失败静默跳过
+                }
+            });
+
+            if (bytes == null || bytes.Length == 0) return;
+
+            await File.WriteAllBytesAsync(file, bytes);
 
             StashItems.Add(new StashItem
             {
@@ -732,9 +890,9 @@ public partial class MainWindow : Window
                 IsTemporary = true
             });
         }
-        catch
+        catch (Exception ex)
         {
-            // 下载失败不阻断
+            App.LogException("AddImageUrlToStash", ex);
         }
     }
 
@@ -1199,6 +1357,35 @@ public partial class MainWindow : Window
 
     #region 持久化
 
+    // 保存节流：合并短时间内的多次列表变动，避免频繁同步写盘
+    private System.Windows.Threading.DispatcherTimer? _saveTimer;
+
+    /// <summary>安排一次延迟保存（200ms 合并窗口）。</summary>
+    private void ScheduleSaveStash()
+    {
+        if (_saveTimer == null)
+        {
+            _saveTimer = new System.Windows.Threading.DispatcherTimer
+            {
+                Interval = TimeSpan.FromMilliseconds(200)
+            };
+            _saveTimer.Tick += (_, _) =>
+            {
+                _saveTimer!.Stop();
+                SaveStash();
+            };
+        }
+        _saveTimer.Stop();
+        _saveTimer.Start();
+    }
+
+    private void FlushPendingSave()
+    {
+        _saveTimer?.Stop();
+        _saveTimer = null;
+        SaveStash();
+    }
+
     private void SaveStash()
     {
         try
@@ -1276,8 +1463,12 @@ public partial class MainWindow : Window
     /// <summary>从托盘菜单退出应用。</summary>
     private void ExitApplication()
     {
-        SaveStash();
-        UninstallMouseHook();
+        try
+        {
+            FlushPendingSave();
+            UninstallMouseHook();
+        }
+        catch { /* 退出过程异常不应阻碍关闭 */ }
         System.Windows.Application.Current.Shutdown();
     }
 
